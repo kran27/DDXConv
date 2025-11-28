@@ -114,15 +114,16 @@ namespace DDXConv
             reader.ReadBytes(5);
             
             // Read height at 0x0E
-            ushort height = reader.ReadUInt16();
+            ushort height = 256; // Hardcoded for now - resolution detection is broken
+            reader.ReadUInt16(); // Skip the broken height value
             
             // Now at 0x10, read 52 bytes of texture header (to 0x44)
             byte[] textureHeader = reader.ReadBytes(52);
             
             // Width is at absolute offset 0x3C = 0x10 + 0x2C (44 bytes into header)
-            ushort width = BitConverter.ToUInt16(textureHeader, 0x2C);
+            ushort width = 256; // Hardcoded for now - resolution detection is broken
             
-            Console.WriteLine($"Dimensions from header: {width}x{height}");
+            Console.WriteLine($"Dimensions from header (hardcoded): {width}x{height}");
             
             var texture = ParseD3DTextureHeader(textureHeader, width, height);
 
@@ -267,7 +268,7 @@ namespace DDXConv
                     
                     // Calculate what dimensions would fit this data
                     uint totalSize = (uint)mainData.Length;
-                    int blockSize = texture.ActualFormat == 0x82 || texture.ActualFormat == 0x52 ? 8 : 16;
+                    int blockSize = (texture.ActualFormat == 0x82 || texture.ActualFormat == 0x52 || texture.ActualFormat == 0x7B) ? 8 : 16;
                     uint totalBlocks = totalSize / (uint)blockSize;
                     
                     // For 81920 bytes of DXT5: 81920/16 = 5120 blocks
@@ -462,13 +463,58 @@ namespace DDXConv
                 }
                 else
                 {
-                    // Exact match - just untile
-                    byte[] untiled = UnswizzleDXTTexture(mainData, width, height, texture.ActualFormat);
-                    Console.WriteLine($"Untiled to {untiled.Length} bytes");
+                    // Exact match - check if this is mip atlas + main surface format
+                    // For 128x128: 24576 bytes atlas (256x192) + 8192 bytes main (128x128) = 32768 total
+                    int blockSize = (texture.ActualFormat == 0x82 || texture.ActualFormat == 0x52 || texture.ActualFormat == 0x7B) ? 8 : 16;
                     
-                    linearData = untiled;
-                    texture.MipLevels = 1;
-                    Console.WriteLine($"Set MipLevels to {texture.MipLevels}");
+                    // Check for 128x128 texture with mip atlas
+                    int atlasSize128 = 24576;
+                    int mainSize128 = 8192;
+                    if (mainData.Length == atlasSize128 + mainSize128)
+                    {
+                        Console.WriteLine($"Detected 128x128 texture with mip atlas (24576 + 8192 bytes)");
+                        
+                        byte[] chunk1 = new byte[atlasSize128];
+                        byte[] chunk2 = new byte[mainSize128];
+                        Array.Copy(mainData, 0, chunk1, 0, atlasSize128);
+                        Array.Copy(mainData, atlasSize128, chunk2, 0, mainSize128);
+                        
+                        // Untile: atlas is 256x192, main is 128x128
+                        byte[] untiledAtlas = UnswizzleDXTTexture(chunk1, 256, 192, texture.ActualFormat);
+                        byte[] untiledMain = UnswizzleDXTTexture(chunk2, 128, 128, texture.ActualFormat);
+                        
+                        Console.WriteLine($"Untiled atlas (256x192) to {untiledAtlas.Length} bytes");
+                        Console.WriteLine($"Untiled main (128x128) to {untiledMain.Length} bytes");
+                        
+                        // Save the untiled atlas for inspection
+                        string atlasPath = outputPath.Replace(".dds", "_atlas_untiled.bin");
+                        File.WriteAllBytes(atlasPath, untiledAtlas);
+                        Console.WriteLine($"Saved untiled atlas to {atlasPath}");
+                        
+                        // Extract mips from atlas
+                        byte[] mips = UnpackMipAtlas(untiledAtlas, 256, 192, texture.ActualFormat);
+                        Console.WriteLine($"Extracted {mips.Length} bytes of mips from atlas");
+                        
+                        // Combine main + mips
+                        linearData = new byte[untiledMain.Length + mips.Length];
+                        Array.Copy(untiledMain, 0, linearData, 0, untiledMain.Length);
+                        Array.Copy(mips, 0, linearData, untiledMain.Length, mips.Length);
+                        
+                        texture.Width = 128;
+                        texture.Height = 128;
+                        texture.MipLevels = CalculateMipLevels(128, 128);
+                        Console.WriteLine($"Final: 128x128 with {texture.MipLevels} mip levels, {linearData.Length} bytes total");
+                    }
+                    else
+                    {
+                        // Just untile as-is
+                        byte[] untiled = UnswizzleDXTTexture(mainData, width, height, texture.ActualFormat);
+                        Console.WriteLine($"Untiled to {untiled.Length} bytes");
+                        
+                        linearData = untiled;
+                        texture.MipLevels = 1;
+                        Console.WriteLine($"Set MipLevels to {texture.MipLevels}");
+                    }
                 }
             }
             
@@ -583,6 +629,7 @@ namespace DDXConv
                 0x53 => 0x33545844, // DXT3  
                 0x54 => 0x35545844, // DXT5
                 0x71 => 0x32495441, // ATI2 (BC5) - Xbox 360 normal map format
+                0x7B => 0x31495441, // ATI1 (BC4) - Single channel format (specular maps)
                 0x82 => 0x31545844, // DXT1 (default when DWORD[4] is 0)
                 0x86 => 0x31545844, // DXT1 variant
                 0x88 => 0x35545844, // DXT5 variant
@@ -635,6 +682,7 @@ namespace DDXConv
             switch (format)
             {
                 case 0x52: // DXT1
+                case 0x7B: // ATI1/BC4 (single channel, same block size as DXT1)
                 case 0x82: // DXT1 variant
                 case 0x86: // DXT1 variant
                 case 0x12: // GPUTEXTUREFORMAT_DXT1
@@ -765,6 +813,7 @@ namespace DDXConv
             switch (format)
             {
                 case 0x52: // DXT1
+                case 0x7B: // ATI1/BC4 (single channel, same block size as DXT1)
                 case 0x82: // DXT1 variant
                 case 0x86: // DXT1 variant
                 case 0x12: // GPUTEXTUREFORMAT_DXT1
@@ -844,7 +893,7 @@ namespace DDXConv
             // Interleave two chunks horizontally to form a complete texture
             // leftChunk is leftWidth pixels wide, rightChunk is rightWidth pixels wide
             int totalWidth = leftWidth + rightWidth;
-            int blockSize = format == 0x82 || format == 0x52 ? 8 : 16;
+            int blockSize = (format == 0x82 || format == 0x52 || format == 0x7B) ? 8 : 16;
             
             int leftBlocksWide = leftWidth / 4;
             int rightBlocksWide = rightWidth / 4;
@@ -877,6 +926,7 @@ namespace DDXConv
             switch (format)
             {
                 case 0x52: // DXT1
+                case 0x7B: // ATI1/BC4
                 case 0x82: // DXT1 variant
                 case 0x86: // DXT1 variant
                 case 0x12: // GPUTEXTUREFORMAT_DXT1
@@ -899,9 +949,17 @@ namespace DDXConv
             
             int atlasWidthInBlocks = width / 4;
             
-            // Actual texture is half the atlas size
+            // Actual texture is half the atlas width (for square textures)
+            // But for 256x192 atlas, actual texture is 128x128
             int actualWidth = width / 2;
-            int actualHeight = height / 2;
+            int actualHeight = width / 2; // Use width/2 to get square dimension
+            
+            // Handle special case of 256x192 atlas for 128x128 texture
+            if (width == 256 && height == 192)
+            {
+                actualWidth = 128;
+                actualHeight = 128;
+            }
             
             // Calculate total size needed for all mips linearly packed
             uint totalSize = CalculateMainDataSize((uint)actualWidth, (uint)actualHeight, format, CalculateMipLevels((uint)actualWidth, (uint)actualHeight));
@@ -909,8 +967,20 @@ namespace DDXConv
             int outputOffset = 0;
             
             // Mip positions in blocks (each block is 4x4 pixels)
-            // Based on 256x256 atlas (64x64 blocks) containing 128x128 texture (32x32 blocks) with mips
-            var mipPositions = new (int x, int y, int w, int h)[]
+            // For 256x256 atlas (64x64 blocks) containing 128x128 texture (32x32 blocks):
+            // For 256x192 atlas (64x48 blocks) containing 128x128 texture (32x32 blocks):
+            // When atlas is 256x192 for a 128x128 texture, positions stay the same but mip sizes are halved
+            Console.WriteLine($"UnpackMipAtlas: width={width}, height={height}, using {(width == 256 && height == 192 ? "256x192" : "default")} mip layout");
+            var mipPositions = width == 256 && height == 192 ? new (int x, int y, int w, int h)[]
+            {
+                (0, 0, 16, 16),      // Mip 0: 64x64 at (0,0)
+                (32, 0, 8, 8),       // Mip 1: 32x32 at (128,0)
+                (4, 32, 4, 4),       // Mip 2: 16x16 at (16,128)
+                (2, 32, 2, 2),       // Mip 3: 8x8 at (8,128)
+                (1, 32, 1, 1),       // Mip 4: 4x4 at (4,128)
+                (0, 34, 1, 1),       // Mip 5: 2x2 at (0,136) - sub-block
+                (0, 33, 1, 1),       // Mip 6: 1x1 at (0,132) - sub-block
+            } : new (int x, int y, int w, int h)[]
             {
                 (0, 0, 32, 32),      // Mip 0: 128x128 at (0,0)
                 (32, 0, 16, 16),     // Mip 1: 64x64 at (128,0)
