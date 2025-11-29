@@ -308,6 +308,20 @@ namespace DDXConv
                 
                 Console.WriteLine($"Untiled both chunks to {untiledAtlas.Length} and {untiledMain.Length} bytes");
                 
+                // Save the untiled atlas as a DDS file for inspection
+                string atlasPath = outputPath.Replace(".dds", "_atlas.dds");
+                var atlasTexture = new D3DTextureInfo
+                {
+                    Width = (ushort)atlasWidth,
+                    Height = (ushort)atlasHeight,
+                    Format = texture.Format,
+                    ActualFormat = texture.ActualFormat,
+                    DataFormat = texture.DataFormat,
+                    MipLevels = 1
+                };
+                WriteDdsFile(atlasPath, atlasTexture, untiledAtlas, null);
+                Console.WriteLine($"Saved untiled atlas to {atlasPath}");
+                
                 // Extract mips from atlas
                 byte[] mips = UnpackMipAtlas(untiledAtlas, atlasWidth, atlasHeight, texture.ActualFormat);
                 Console.WriteLine($"Extracted {mips.Length} bytes of mips from atlas");
@@ -1093,11 +1107,30 @@ namespace DDXConv
                 actualWidth = 1024;
                 actualHeight = 1024;
             }
+            // For non-square atlases, determine the actual texture dimensions
+            // 320x256 atlas -> 512x256 texture (width = atlas_width * 8/5, height = atlas_height)
+            else if (width == 320 && height == 256)
+            {
+                actualWidth = 512;
+                actualHeight = 256;
+            }
             // General pattern: if height is 3/4 of width, actual texture is 2x width
             else if (height == width * 3 / 4)
             {
                 actualWidth = width * 2;
                 actualHeight = width * 2;
+            }
+            // For wider-than-tall atlases where width = 5/4 of height, actual texture is 8/5 * atlas_width
+            else if (width * 4 == height * 5)
+            {
+                actualWidth = width * 8 / 5;
+                actualHeight = height;
+            }
+            // For taller-than-wide atlases where height = 5/4 of width, actual texture is 8/5 * atlas_height
+            else if (height * 4 == width * 5)
+            {
+                actualWidth = width;
+                actualHeight = height * 8 / 5;
             }
             
             // Calculate total size needed for all mips linearly packed
@@ -1108,9 +1141,10 @@ namespace DDXConv
             // Mip positions in blocks (each block is 4x4 pixels)
             // For 256x256 atlas (64x64 blocks) containing 128x128 texture (32x32 blocks):
             // For 256x192 atlas (64x48 blocks) containing 128x128 texture (32x32 blocks):
+            // For 320x256 atlas (80x64 blocks) containing 512x256 texture mips:
             // For 1024x1024 atlas containing 1024x1024 texture - mips are packed within
             // User measurements (in pixels): 0,0 | 512,0 | 0,256 | 256,256 | 512,256 | 640,256 | 768,256 | 912,256 | 904,256 | 900,256 | 896,264 | 896,260
-            Console.WriteLine($"UnpackMipAtlas: width={width}, height={height}, using {(width == 256 && height == 192 ? "256x192" : width == 1024 && height == 1024 ? "1024x1024" : "default")} mip layout");
+            Console.WriteLine($"UnpackMipAtlas: width={width}, height={height}, using {(width == 256 && height == 192 ? "256x192" : width == 1024 && height == 1024 ? "1024x1024" : width == 320 && height == 256 ? "320x256" : "default")} mip layout");
             
             // Special handling for 1024x1024 atlas with split mips
             if (width == 1024 && height == 1024)
@@ -1231,6 +1265,17 @@ namespace DDXConv
                 (1, 32, 1, 1),       // Mip 4: 4x4 at (4,128)
                 (0, 34, 1, 1),       // Mip 5: 2x2 at (0,136) - sub-block
                 (0, 33, 1, 1),       // Mip 6: 1x1 at (0,132) - sub-block
+            } : width == 320 && height == 256 ? new (int x, int y, int w, int h)[]
+            {
+                (0, 0, 64, 32),      // Mip 0: 256x128 at (0,0)
+                (0, 32, 32, 16),     // Mip 1: 128x64 at (0,128)
+                (32, 32, 16, 8),     // Mip 2: 64x32 at (128,128)
+                (64, 36, 8, 4),      // Mip 3: 32x16 at (256,144)
+                (64, 34, 4, 2),      // Mip 4: 16x8 at (256,136)
+                (64, 33, 2, 1),      // Mip 5: 8x4 at (256,132)
+                (68, 32, 1, 1),      // Mip 6: 4x2 at (272,128) - sub-block, store as 1 block (4x4)
+                (66, 32, 1, 1),      // Mip 7: 2x1 at (264,128) - sub-block, store as 1 block (4x4)
+                (65, 32, 1, 1),      // Mip 8: 1x1 at (260,128) - sub-block, store as 1 block (4x4)
             } : new (int x, int y, int w, int h)[]
             {
                 (0, 0, 32, 32),      // Mip 0: 128x128 at (0,0)
