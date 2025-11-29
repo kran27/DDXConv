@@ -214,37 +214,49 @@ namespace DDXConv
                 chunk1Size = atlasSize;
                 chunk2Size = atlasSize;
             }
-            else if (width >= 512 && height >= 512 && mainData.Length > mainSurfaceSize)
+            else if (mainData.Length > mainSurfaceSize)
             {
-                // Large texture: check if we have main surface + mip atlas
-                // Mip atlas size = sum of all mips from width/2 down to 4x4
-                // For 1024x1024 DXT1: mips are 512,256,128,64,32,16,8,4 = 131072+32768+8192+2048+512+128+32+8 = 174760
-                // But atlas layout adds padding, so actual could be 512x384 = 196608
+                // ALL DDX files use two-chunk format: chunk1 = mip atlas, chunk2 = main surface
                 int remainingSize = mainData.Length - (int)mainSurfaceSize;
                 
-                // Calculate expected mip atlas dimensions (width/2 x height*3/4)
-                int atlasWidth = width / 2;
-                int atlasHeight = height * 3 / 4;
-                int expectedAtlasSize = CalculateMipSize(atlasWidth, atlasHeight, texture.ActualFormat);
-                
-                Console.WriteLine($"Checking for two-chunk format: {mainData.Length} bytes, main={mainSurfaceSize}, remaining={remainingSize}, expected atlas={expectedAtlasSize}");
-                
-                if (Math.Abs(remainingSize - expectedAtlasSize) < 1000)
-                {
-                    isTwoChunkFormat = true;
-                    chunk1Size = (uint)remainingSize;
-                    chunk2Size = (uint)mainSurfaceSize;
-                    Console.WriteLine($"Detected large texture two-chunk format: atlas={chunk1Size} + main={chunk2Size}");
-                }
+                isTwoChunkFormat = true;
+                chunk1Size = (uint)remainingSize;
+                chunk2Size = (uint)mainSurfaceSize;
+                Console.WriteLine($"Detected two-chunk format: atlas={chunk1Size} + main={chunk2Size}");
             }
             
             if (isTwoChunkFormat)
             {
                 // Two-chunk format
                 // chunk1Size and chunk2Size were set by detection above
-                // For large textures: chunk1 (smaller) = mip atlas, chunk2 (larger) = main surface
-                // For small textures: chunk1 = mip atlas, chunk2 = main surface (same sizes)
+                // For all textures: chunk1 (smaller) = mip atlas, chunk2 (larger) = main surface
                 Console.WriteLine($"Two-chunk format confirmed ({mainData.Length} bytes)");
+                
+                // Determine block size for atlas dimension calculation
+                int blockSize;
+                switch (texture.ActualFormat)
+                {
+                    case 0x52: // DXT1
+                    case 0x7B: // ATI1/BC4
+                    case 0x82: // DXT1 variant
+                    case 0x86: // DXT1 variant
+                    case 0x12: // GPUTEXTUREFORMAT_DXT1
+                        blockSize = 8;
+                        break;
+                        
+                    case 0x53: // DXT3
+                    case 0x54: // DXT5
+                    case 0x71: // DXT5 variant (normal maps)
+                    case 0x88: // DXT5 variant
+                    case 0x13: // GPUTEXTUREFORMAT_DXT2/3
+                    case 0x14: // GPUTEXTUREFORMAT_DXT4/5
+                        blockSize = 16;
+                        break;
+                        
+                    default:
+                        blockSize = 16;
+                        break;
+                }
                 
                 byte[] chunk1 = new byte[chunk1Size];
                 byte[] chunk2 = new byte[chunk2Size];
@@ -254,7 +266,7 @@ namespace DDXConv
                 // Determine atlas dimensions
                 int atlasWidth, atlasHeight;
                 
-                if (width <= 256)
+                if (width <= 256 && height <= 256)
                 {
                     // Small texture: atlas same size as main
                     atlasWidth = width;
@@ -262,10 +274,30 @@ namespace DDXConv
                 }
                 else
                 {
-                    // Large texture: atlas is ALSO the main dimensions (1024x1024 atlas for 1024x1024 texture)
-                    // The mips are packed within this 1024x1024 space
-                    atlasWidth = width;
-                    atlasHeight = height;
+                    // Large texture: calculate atlas dimensions from actual chunk1 size
+                    // The atlas contains mips, determine dimensions by reverse-calculating from size
+                    int blocksInAtlas = (int)chunk1Size / blockSize;
+                    
+                    // For non-square textures, atlas width is typically 5/8 of main width
+                    // For square textures, atlas is same dimensions as main
+                    if (width == height)
+                    {
+                        // Square: atlas same as main (1024x1024 for 1024x1024 texture)
+                        atlasWidth = width;
+                        atlasHeight = height;
+                    }
+                    else if (width > height)
+                    {
+                        // Wider than tall: e.g., 512x256 -> atlas 320x256
+                        atlasWidth = (width * 5) / 8;
+                        atlasHeight = height;
+                    }
+                    else
+                    {
+                        // Taller than wide: atlas width * 5/8, height same
+                        atlasWidth = width;
+                        atlasHeight = (height * 5) / 8;
+                    }
                 }
                 
                 Console.WriteLine($"Untiling chunk1 ({chunk1Size} bytes) as atlas {atlasWidth}x{atlasHeight} and chunk2 ({chunk2Size} bytes) as main {width}x{height}");
@@ -524,7 +556,7 @@ namespace DDXConv
                     // Check for 128x128 texture with mip atlas
                     int atlasSize128 = 24576;
                     int mainSize128 = 8192;
-                    if (mainData.Length == atlasSize128 + mainSize128)
+                    if (width == 128 && height == 128 && mainData.Length == atlasSize128 + mainSize128)
                     {
                         Console.WriteLine($"Detected 128x128 texture with mip atlas (24576 + 8192 bytes)");
                         
