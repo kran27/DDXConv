@@ -936,7 +936,7 @@ public class DdxParser(bool verbose = false)
                     var mipAtlasResult = TryExtractPackedMipAtlas(fullUntiled, width, height, halfW,
                         halfH, texture.ActualFormat, _verboseLogging);
 
-                    if (mipAtlasResult != null && mipAtlasResult.MipCount >= 2)
+                    if (mipAtlasResult is { MipCount: >= 2 } && mainData.Length != mainSurfaceSize)
                     {
                         if (_verboseLogging)
                             Console.WriteLine(
