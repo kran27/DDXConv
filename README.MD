@@ -49,5 +49,7 @@ Untiling code based on [xenia](https://github.com/xenia-project/xenia)
 
 ---
 
-### Other Useful Tools for New Vegas Prototype files
-- [Save Image Extractor](https://gist.github.com/kran27/291349139c769173a0f02e1eb2462975)
+### Other Tools for New Vegas Prototypes
+- [Save Image Extractor](https://github.com/GamesPastOrg/Fallout_Save_Image_Extractor)
+- [Memory Dump Scanner](https://github.com/slfx77/xbox-360-minidump-extractor)
+- [Xenia Patches](https://github.com/GamesPastOrg/FalloutForXenia)
